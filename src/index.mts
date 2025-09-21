@@ -14,7 +14,7 @@ import { parse as parseToml, stringify as stringifyToml } from "@iarna/toml";
 
 const server = new Server(
   {
-    name: "mcp-installer",
+    name: "mcp-installer-codex",
     version: "0.5.0",
   },
   {
