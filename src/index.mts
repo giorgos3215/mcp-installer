@@ -10,6 +10,7 @@ import * as os from "os";
 import * as fs from "fs";
 import * as path from "path";
 import { spawnPromise } from "spawn-rx";
+import { parse as parseToml, stringify as stringifyToml } from "@iarna/toml";
 
 const server = new Server(
   {
@@ -107,67 +108,94 @@ async function isNpmPackage(name: string) {
   }
 }
 
-function installToClaudeDesktop(
-  name: string,
-  cmd: string,
-  args: string[],
-  env?: string[]
-) {
-  const configPath =
-    process.platform === "win32"
-      ? path.join(
-          os.homedir(),
-          "AppData",
-          "Roaming",
-          "Claude",
-          "claude_desktop_config.json"
-        )
-      : path.join(
-          os.homedir(),
-          "Library",
-          "Application Support",
-          "Claude",
-          "claude_desktop_config.json"
-        );
+type TomlValue =
+  | string
+  | number
+  | boolean
+  | Date
+  | TomlValue[]
+  | { [key: string]: TomlValue };
 
-  let config: any;
-  try {
-    config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  } catch (e) {
-    config = {};
+type CodexServerConfig = {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+};
+
+type CodexConfig = {
+  mcp_servers?: Record<string, CodexServerConfig>;
+} & { [key: string]: TomlValue };
+
+function parseEnvVariables(env?: string[]): Record<string, string> | undefined {
+  if (!env) {
+    return undefined;
   }
 
-  const envObj = (env ?? []).reduce((acc, val) => {
-    const [key, value] = val.split("=");
-    acc[key] = value;
+  return env.reduce((acc, variable) => {
+    const separatorIndex = variable.indexOf("=");
+
+    if (separatorIndex === -1) {
+      return acc;
+    }
+
+    const key = variable.slice(0, separatorIndex);
+    const value = variable.slice(separatorIndex + 1);
+
+    if (key.length > 0) {
+      acc[key] = value;
+    }
 
     return acc;
   }, {} as Record<string, string>);
-
-  const newServer = {
-    command: cmd,
-    args: args,
-    ...(env ? { env: envObj } : {}),
-  };
-
-  const mcpServers = config.mcpServers ?? {};
-  mcpServers[name] = newServer;
-  config.mcpServers = mcpServers;
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
 }
 
-function installRepoWithArgsToClaudeDesktop(
+function updateCodexConfig(
+  serverId: string,
+  command: string,
+  args: string[],
+  env?: string[]
+) {
+  const codexHome = process.env.CODEX_HOME ?? path.join(os.homedir(), ".codex");
+  fs.mkdirSync(codexHome, { recursive: true });
+
+  const configPath = path.join(codexHome, "config.toml");
+  let config: CodexConfig = {};
+
+  if (fs.existsSync(configPath)) {
+    const rawConfig = fs.readFileSync(configPath, "utf8");
+    config = rawConfig.trim().length > 0 ? (parseToml(rawConfig) as CodexConfig) : {};
+  }
+
+  const existingServers = config.mcp_servers ?? {};
+  const existingServerConfig = existingServers[serverId];
+  const envObj = parseEnvVariables(env);
+  const resolvedEnv =
+    env !== undefined ? envObj ?? {} : existingServerConfig?.env;
+  const serverConfig: CodexServerConfig = {
+    command,
+    args,
+    ...(resolvedEnv !== undefined ? { env: resolvedEnv } : {}),
+  };
+
+  config.mcp_servers = {
+    ...existingServers,
+    [serverId]: serverConfig,
+  };
+
+  fs.writeFileSync(configPath, stringifyToml(config as any));
+}
+
+function registerRepoWithCodex(
   name: string,
-  npmIfTrueElseUvx: boolean,
+  useNpm: boolean,
   args?: string[],
   env?: string[]
 ) {
-  // If the name is in a scoped package, we need to remove the scope
   const serverName = /^@.*\//i.test(name) ? name.split("/")[1] : name;
 
-  installToClaudeDesktop(
+  updateCodexConfig(
     serverName,
-    npmIfTrueElseUvx ? "npx" : "uvx",
+    useNpm ? "npx" : "uvx",
     [name, ...(args ?? [])],
     env
   );
@@ -218,7 +246,7 @@ async function installLocalMcpServer(
     const servers = await attemptNodeInstall(dirPath);
 
     Object.keys(servers).forEach((name) => {
-      installToClaudeDesktop(
+      updateCodexConfig(
         name,
         "node",
         [servers[name], ...(args ?? [])],
@@ -267,7 +295,7 @@ async function installRepoMcpServer(
   }
 
   if (await isNpmPackage(name)) {
-    installRepoWithArgsToClaudeDesktop(name, true, args, env);
+    registerRepoWithCodex(name, true, args, env);
 
     return {
       content: [
@@ -291,7 +319,7 @@ async function installRepoMcpServer(
     };
   }
 
-  installRepoWithArgsToClaudeDesktop(name, false, args, env);
+  registerRepoWithCodex(name, false, args, env);
 
   return {
     content: [

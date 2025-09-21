@@ -12,6 +12,7 @@
   "author": "Ani Betts <anais@anaisbetts.org>",
   "license": "MIT",
   "dependencies": {
+    "@iarna/toml": "^2.2.5",
     "@modelcontextprotocol/sdk": "^1.0.1",
     "rimraf": "^6.0.1",
     "spawn-rx": "^4.0.0"
